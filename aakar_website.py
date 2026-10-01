@@ -4,96 +4,91 @@ import datetime
 
 app = Flask(__name__)
 
-def get_price(symbol):
+# ===== YAHAN PE LIVE CANDLE FORMULA COPY KIYA HAI =====
+def get_live_candle(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        data = ticker.history(period="1d")
-        if not data.empty:
-            price = data['Close'].iloc[-1]
-            prev = data['Open'].iloc[0]
-            change = price - prev
-            pct = (change/prev)*100
-            return f"{price:,.2f}", f"{change:+.2f} ({pct:+.2f}%)", change>=0
+        df = ticker.history(period="1d", interval="1m") # 1 min ka live data
+        if df.empty:
+            return None
+
+        # FORMULA
+        OPEN = df['Open'].iloc[0] # 9:15 ka pehla price
+        HIGH = df['High'].max() # Din ka sabse high
+        LOW = df['Low'].min() # Din ka sabse low
+        CLOSE = df['Close'].iloc[-1] # Abhi ka price
+
+        is_green = CLOSE > OPEN
+        color = "#22c55e" if is_green else "#ef4444"
+        candle_type = "GREEN 🟢" if is_green else "RED 🔴"
+
+        return {
+            "OPEN": f"{OPEN:,.2f}",
+            "HIGH": f"{HIGH:,.2f}",
+            "LOW": f"{LOW:,.2f}",
+            "CLOSE": f"{CLOSE:,.2f}",
+            "COLOR": color,
+            "TYPE": candle_type
+        }
     except:
-        pass
-    return "Loading...", "", True
+        return None
 
 @app.route('/')
 def home():
-    nifty_p, nifty_c, nifty_up = get_price("^NSEI")
-    sensex_p, sensex_c, sensex_up = get_price("^BSESN")
-    bank_p, bank_c, bank_up = get_price("^NSEBANK")
+    nifty = get_live_candle("^NSEI")
+    sensex = get_live_candle("^BSESN")
+    bank = get_live_candle("^NSEBANK")
+
+    if not nifty:
+        return "<h1>Market Closed hai, 9:15 AM pe LIVE hoga</h1>"
 
     now = datetime.datetime.now().strftime("%d-%m-%Y %I:%M:%S %p")
-    c1 = "#22c55e" if nifty_up else "#ef4444"
-    c2 = "#22c55e" if sensex_up else "#ef4444"
-    c3 = "#22c55e" if bank_up else "#ef4444"
 
     return f"""
     <html>
     <head>
-        <title>Aakar Live - NIFTY | SENSEX</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Aakar Live Candle</title>
         <style>
-            body{{background:#0f172a;color:white;font-family:Arial;text-align:center;margin:0;padding:20px}}
-           .card{{background:#1e293b;padding:25px;margin:15px auto;border-radius:15px;max-width:400px}}
-            h1{{color:#38bdf8}}
-           .price{{font-size:32px;font-weight:bold;margin:10px 0}}
-           .chart{{max-width:800px;margin:20px auto;background:#1e293b;border-radius:15px;padding:10px}}
+            body{{background:#0f172a;color:white;font-family:Arial;text-align:center;padding:20px}}
+           .card{{background:#1e293b;padding:20px;margin:15px auto;border-radius:15px;max-width:500px;border:2px solid {nifty['COLOR']}}}
+           .row{{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #334155}}
+           .chart{{max-width:850px;margin:25px auto;background:#1e293b;border-radius:15px;padding:10px}}
         </style>
     </head>
     <body>
-        <h1>AAKAR LIVE MARKET</h1>
-        <p>Last Update: {now} | Auto-refresh 30s</p>
+        <h1>AAKAR LIVE CANDLE</h1>
+        <p>{now} - Auto Refresh 10s</p>
 
         <div class="card">
-            <h2>NIFTY 50</h2>
-            <div class="price" style="color:{c1}">Rs {nifty_p}</div>
-            <div style="color:{c1}">{nifty_c}</div>
+            <h2>NIFTY 50 - {nifty['TYPE']}</h2>
+            <div class="row"><span>OPEN (9:15)</span><span>{nifty['OPEN']}</span></div>
+            <div class="row"><span>HIGH</span><span style="color:#22c55e">{nifty['HIGH']}</span></div>
+            <div class="row"><span>LOW</span><span style="color:#ef4444">{nifty['LOW']}</span></div>
+            <div class="row"><span>CLOSE (LTP)</span><span style="color:{nifty['COLOR']};font-weight:bold;font-size:22px">{nifty['CLOSE']}</span></div>
         </div>
 
-        <div class="card">
-            <h2>SENSEX</h2>
-            <div class="price" style="color:{c2}">Rs {sensex_p}</div>
-            <div style="color:{c2}">{sensex_c}</div>
-        </div>
-
-        <div class="card">
-            <h2>BANK NIFTY</h2>
-            <div class="price" style="color:{c3}">Rs {bank_p}</div>
-            <div style="color:{c3}">{bank_c}</div>
+        <div class="card" style="border-color:{sensex['COLOR']}">
+            <h2>SENSEX - {sensex['TYPE']}</h2>
+            <div class="row"><span>OPEN</span><span>{sensex['OPEN']}</span></div>
+            <div class="row"><span>HIGH</span><span>{sensex['HIGH']}</span></div>
+            <div class="row"><span>LOW</span><span>{sensex['LOW']}</span></div>
+            <div class="row"><span>CLOSE</span><span style="color:{sensex['COLOR']};font-weight:bold;font-size:22px">{sensex['CLOSE']}</span></div>
         </div>
 
         <div class="chart">
-            <h3>📈 Live Chart - NIFTY 50</h3>
-            <div class="tradingview-widget-container">
-              <div id="tradingview_nifty"></div>
-              <script src="https://s3.tradingview.com/tv.js"></script>
-              <script>
-                new TradingView.widget({{
-                  "width": "100%", "height": 400, "symbol": "NSE:NIFTY",
-                  "interval": "D", "timezone": "Asia/Kolkata",
-                  "theme": "dark", "style": "1", "locale": "in",
-                  "toolbar_bg": "#f1f3f6", "enable_publishing": false,
-                  "allow_symbol_change": true, "container_id": "tradingview_nifty"
-                }});
-              </script>
-            </div>
-        </div>
-
-        <div class="chart">
-            <h3>📈 Live Chart - SENSEX</h3>
-            <div id="tradingview_sensex"></div>
+            <h3>📈 LIVE TradingView Chart</h3>
+            <div id="tv"></div>
+            <script src="https://s3.tradingview.com/tv.js"></script>
             <script>
                 new TradingView.widget({{
-                  "width": "100%", "height": 400, "symbol": "BSE:SENSEX",
-                  "interval": "D", "timezone": "Asia/Kolkata",
-                  "theme": "dark", "style": "1", "locale": "in",
-                  "container_id": "tradingview_sensex"
+                  "width":"100%","height":450,"symbol":"NSE:NIFTY",
+                  "interval":"1","timezone":"Asia/Kolkata",
+                  "theme":"dark","style":"1","locale":"in","container_id":"tv"
                 }});
             </script>
         </div>
-        <script>setTimeout(()=>location.reload(),30000);</script>
+        <script>setTimeout(()=>location.reload(),10000);</script>
     </body>
     </html>
     """
