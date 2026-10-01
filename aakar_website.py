@@ -1,136 +1,124 @@
 from flask import Flask
 import yfinance as yf
 import datetime
-import json
+import pytz
 
 app = Flask(__name__)
 
-def get_chart_data(symbol="^NSEI"):
+def get_orb_levels():
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker("^NSEI")
+        # Aaj ka 5-min data
         df = ticker.history(period="1d", interval="5m")
-        if df.empty:
-            return None, None
+        if df.empty or len(df) < 4:
+            return None
 
-        # LIVE CANDLE FORMULA
-        OPEN = float(df['Open'].iloc[0])
-        HIGH = float(df['High'].max())
-        LOW = float(df['Low'].min())
-        CLOSE = float(df['Close'].iloc[-1])
+        # Time ko IST me convert
+        df.index = df.index.tz_convert('Asia/Kolkata') if df.index.tz is not None else df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
 
-        # Chart ke liye data banao
-        chart_data = []
+        # 9:25 aur 9:35 ki candle dhundo
+        candle_925 = None
+        candle_935 = None
+        live_price = float(df['Close'].iloc[-1])
+
         for idx, row in df.iterrows():
-            chart_data.append({
-                "time": int(idx.timestamp()),
-                "open": float(row['Open']),
-                "high": float(row['High']),
-                "low": float(row['Low']),
-                "close": float(row['Close'])
-            })
+            t = idx.strftime("%H:%M")
+            if t == "09:25":
+                candle_925 = {"HIGH": float(row['High']), "LOW": float(row['Low']), "CLOSE": float(row['Close'])}
+            if t == "09:35" or t == "09:30": # kabhi 9:30 pe banti hai
+                if candle_935 is None: # pehli wali le lo
+                    candle_935 = {"HIGH": float(row['High']), "LOW": float(row['Low']), "CLOSE": float(row['Close'])}
 
-        info = {"OPEN": OPEN, "HIGH": HIGH, "LOW": LOW, "CLOSE": CLOSE}
-        return info, chart_data
+        if not candle_925:
+            # agar 9:25 ka data nahi hai to pehli 2 candle ka high low le lo
+            candle_925 = {"HIGH": float(df['High'][:2].max()), "LOW": float(df['Low'][:2].min()), "CLOSE": float(df['Close'].iloc[1])}
+        if not candle_935:
+            candle_935 = {"HIGH": float(df['High'][:3].max()), "LOW": float(df['Low'][:3].min()), "CLOSE": float(df['Close'].iloc[2])}
+
+        # FORMULA - Tera 9:25 / 9:35 ka logic
+        # Buy = 9:35 High ke upar
+        # Sell = 9:35 Low ke niche
+        signal = "WAIT"
+        if live_price > candle_935["HIGH"]:
+            signal = "BUY BREAKOUT 🚀"
+        elif live_price < candle_935["LOW"]:
+            signal = "SELL BREAKDOWN 🔻"
+        else:
+            signal = "SIDEWAYS - Range me hai"
+
+        return {
+            "925_H": candle_925["HIGH"], "925_L": candle_925["LOW"],
+            "935_H": candle_935["HIGH"], "935_L": candle_935["LOW"],
+            "LTP": live_price,
+            "SIGNAL": signal
+        }
     except Exception as e:
-        print(e)
-        return None, None
+        print(f"Error: {e}")
+        return None
 
 @app.route('/')
 def home():
-    info, candles = get_chart_data("^NSEI")
-    if not info:
-        return "<h1 style='color:white;background:#0f172a;text-align:center;padding:50px'>Market band hai - 9:15 AM ko LIVE hoga</h1>"
+    data = get_orb_levels()
+    now = datetime.datetime.now(datetime.timezone.utc).astimezone(pytz.timezone('Asia/Kolkata')).strftime("%d-%m-%Y %I:%M:%S %p")
 
-    candles_json = json.dumps(candles)
-    now = datetime.datetime.now().strftime("%d-%m-%Y %I:%M:%S %p")
-    color = "#22c55e" if info['CLOSE'] > info['OPEN'] else "#ef4444"
-    ctype = "GREEN 🟢" if info['CLOSE'] > info['OPEN'] else "RED 🔴"
+    if not data:
+        return f"<html><body style='background:#0f172a;color:white;text-align:center;padding:50px'><h1>Market abhi khula nahi - 9:35 ke baad LIVE hoga</h1><p>{now}</p><script>setTimeout(()=>location.reload(),30000);</script></body></html>"
 
     return f"""
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Aakar Live Candle</title>
-        <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+        <title>Aakar 9:25 | 9:35 Formula</title>
         <style>
-            body{{background:#0f172a;color:white;font-family:Arial;margin:0;padding:15px;text-align:center}}
-          .info{{background:#1e293b;padding:15px;border-radius:12px;max-width:850px;margin:10px auto;display:flex;justify-content:space-around;flex-wrap:wrap;border:2px solid {color}}}
-          .info div{{margin:5px 15px}}.info span{{color:#94a3b8;font-size:13px}}.info b{{display:block;font-size:18px;margin-top:4px}}
-            #chart{{max-width:850px;height:500px;margin:20px auto;background:#1e293b;border-radius:12px}}
+            body{{background:#0f172a;color:white;font-family:Arial;text-align:center;padding:10px;margin:0}}
+           .box{{background:#1e293b;padding:15px;border-radius:12px;max-width:900px;margin:12px auto}}
+           .levels{{display:flex;justify-content:space-around;flex-wrap:wrap}}
+           .levels div{{background:#0f172a;padding:12px 18px;border-radius:10px;margin:6px;min-width:110px}}
+           .buy{{color:#22c55e;border:2px solid #22c55e}}.sell{{color:#ef4444;border:2px solid #ef4444}}
+            #tv{{max-width:900px;height:550px;margin:15px auto;border-radius:12px;overflow:hidden}}
+           .signal{{font-size:24px;font-weight:bold;padding:12px;border-radius:10px;margin:10px auto;max-width:400px}}
         </style>
     </head>
     <body>
-        <h2>AAKAR LIVE - NIFTY 50 {ctype}</h2>
-        <p style="color:#94a3b8">{now} | 5-Min LIVE Candle | Auto 10s</p>
+        <h2>AAKAR LIVE - 9:25 & 9:35 FORMULA</h2>
+        <p style="color:#94a3b8">{now} | LTP: {data['LTP']:.2f}</p>
 
-        <div class="info">
-            <div><span>OPEN (9:15)</span><b>{info['OPEN']:.2f}</b></div>
-            <div><span style="color:#22c55e">HIGH</span><b style="color:#22c55e">{info['HIGH']:.2f}</b></div>
-            <div><span style="color:#ef4444">LOW</span><b style="color:#ef4444">{info['LOW']:.2f}</b></div>
-            <div><span>CLOSE (LTP)</span><b style="color:{color};font-size:22px">{info['CLOSE']:.2f}</b></div>
+        <div class="signal" style="background:{'#22c55e33' if 'BUY' in data['SIGNAL'] else '#ef444433' if 'SELL' in data['SIGNAL'] else '#334155'}">
+            {data['SIGNAL']}
         </div>
 
-        <div id="chart"></div>
+        <div class="box">
+            <h3 style="margin:5px">📍 9:25 Candle (Opening Range)</h3>
+            <div class="levels">
+                <div class="buy">9:25 HIGH<br><b>{data['925_H']:.2f}</b></div>
+                <div class="sell">9:25 LOW<br><b>{data['925_L']:.2f}</b></div>
+            </div>
+        </div>
 
+        <div class="box" style="border:2px solid #facc15">
+            <h3 style="margin:5px;color:#facc15">⭐ 9:35 Candle (Main Formula)</h3>
+            <div class="levels">
+                <div class="buy">9:35 HIGH<br><b>{data['935_H']:.2f}</b></div>
+                <div class="sell">9:35 LOW<br><b>{data['935_L']:.2f}</b></div>
+            </div>
+            <p style="color:#94a3b8;font-size:13px;margin-top:10px">FORMULA: LTP > 9:35 HIGH = BUY | LTP < 9:35 LOW = SELL</p>
+        </div>
+
+        <div id="tv"></div>
+        <script src="https://s3.tradingview.com/tv.js"></script>
         <script>
-            const data = {candles_json};
-            const chart = LightweightCharts.createChart(document.getElementById('chart'), {{
-                layout: {{background: {{color: '#1e293b'}}, textColor: '#d1d5db'}},
-                grid: {{vertLines: {{color: '#334155'}}, horzLines: {{color: '#334155'}}}},
-                timeScale: {{timeVisible:true, secondsVisible:false}}
+            new TradingView.widget({{
+              "autosize": true, "height": 550, "symbol": "NSE:NIFTY",
+              "interval": "5", "timezone": "Asia/Kolkata", "theme": "dark",
+              "style": "1", "locale": "in", "container_id": "tv",
+              "drawings_access": {{"type": "black", "tools": [{{"name": "Horizontal Line"}}]}},
             }});
-            const candleSeries = chart.addCandlestickSeries();
-            candleSeries.setData(data);
-
-            // ===== FORMULA LINES CHART PE =====
-            // OPEN Line - Yellow
-            const openLine = {{
-                price: {info['OPEN']},
-                color: '#facc15',
-                lineWidth: 2,
-                lineStyle: 2,
-                axisLabelVisible: true,
-                title: 'OPEN {info['OPEN']:.2f}'
-            }};
-            // HIGH Line - Green
-            const highLine = {{
-                price: {info['HIGH']},
-                color: '#22c55e',
-                lineWidth: 1,
-                lineStyle: 1,
-                axisLabelVisible: true,
-                title: 'HIGH {info['HIGH']:.2f}'
-            }};
-            // LOW Line - Red
-            const lowLine = {{
-                price: {info['LOW']},
-                color: '#ef4444',
-                lineWidth: 1,
-                lineStyle: 1,
-                axisLabelVisible: true,
-                title: 'LOW {info['LOW']:.2f}'
-            }};
-
-            candleSeries.createPriceLine(openLine);
-            candleSeries.createPriceLine(highLine);
-            candleSeries.createPriceLine(lowLine);
-
-            chart.timeScale().fitContent();
         </script>
-        <script>setTimeout(()=>location.reload(),10000);</script>
-        <p style="color:#64748b;margin-top:20px">Yellow Dashed = OPEN Formula | Green = HIGH Formula | Red = LOW Formula</p>
+        <script>setTimeout(()=>location.reload(),15000);</script>
+        <p style="color:#64748b">Har 15 sec me LIVE update hoga. Subah 9:35 ke baad levels fix ho jayenge.</p>
     </body>
     </html>
     """
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
-    """
-
-Commit karte hi 2 min me teri link pe chart pe 3 lines aa jayengi:
-
-- **Yellow Dotted Line = OPEN** (9:15 ka price)
-- **Green Line = HIGH**
-- **Red Line = LOW**
-
-Ab dikhega toh screenshot bhejna!
