@@ -1,0 +1,4 @@
+Flask
+SmartApi-Python
+pyotp
+requests
